@@ -1,0 +1,8 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Meridian Expenses</title>
+<style>body{font:15px system-ui;margin:2rem auto;max-width:52rem;color:#111}
+table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:.45rem;text-align:left}
+nav{margin-bottom:1.5rem}nav a{margin-right:1rem}.err{color:#b00}
+nav form{display:inline-block;margin:0}nav button{font:inherit}</style></head><body>
+<nav><a href="/">Claims</a><a href="/admin/users">Users</a>
+<form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit">Log out</button></form></nav>
+{% block body %}{% endblock %}</body></html>

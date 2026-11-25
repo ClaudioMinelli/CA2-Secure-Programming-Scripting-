@@ -1,0 +1,7 @@
+.venv/
+.sca-venv/
+__pycache__/
+.pytest_cache/
+.env
+expenses.db
+evidence/

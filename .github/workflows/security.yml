@@ -1,0 +1,136 @@
+name: Security
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sast:
+    name: Bandit SAST
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - run: python -m pip install bandit==1.8.6
+      - run: |
+          mkdir -p evidence
+          python -m bandit app.py seed.py -f json -o evidence/bandit.json --exit-zero
+          python scripts/check_bandit.py evidence/bandit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: sast-report
+          path: evidence/bandit.json
+
+  sca:
+    name: Python dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pip-audit==2.9.0
+      - run: |
+          mkdir -p evidence
+          python -m venv .sca-venv
+          .sca-venv/bin/python -m pip install -r requirements.txt
+          .sca-venv/bin/python -m pip freeze > evidence/runtime-resolved.txt
+          python -m pip_audit -r evidence/runtime-resolved.txt --no-deps --disable-pip -f json -o evidence/pip-audit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: dependency-report
+          path: evidence/
+
+  secrets:
+    name: Gitleaks history scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: '8.30.0'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download and verify the Gitleaks release
+        run: |
+          cd "$RUNNER_TEMP"
+          release="https://github.com/gitleaks/gitleaks/releases/download/v$GITLEAKS_VERSION"
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          checksums="gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          curl -fsSLO "$release/$archive"
+          curl -fsSLO "$release/$checksums"
+          awk -v archive="$archive" '$2 == archive || $2 == "*" archive' "$checksums" > gitleaks-checksum.txt
+          sha256sum -c gitleaks-checksum.txt
+          tar -xzf "$archive" gitleaks
+      - name: Scan reachable Git history
+        run: |
+          mkdir -p evidence
+          "$RUNNER_TEMP/gitleaks" version
+          "$RUNNER_TEMP/gitleaks" git --log-opts="--all" --redact=100 \
+            --report-format=json --report-path=evidence/gitleaks.json .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: secrets-report
+          path: evidence/gitleaks.json
+
+  access-policy:
+    name: Application access policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt pytest==8.4.2
+      - run: |
+          mkdir -p evidence
+          python -m pytest tests/security -v --junitxml=evidence/access-policy.xml
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: access-policy-results
+          path: evidence/access-policy.xml
+
+  security-gate:
+    name: Security gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: [sast, sca, secrets, access-policy]
+    if: always()
+    steps:
+      - name: Require each security job to succeed
+        env:
+          SAST_RESULT: ${{ needs.sast.result }}
+          SCA_RESULT: ${{ needs.sca.result }}
+          SECRETS_RESULT: ${{ needs.secrets.result }}
+          POLICY_RESULT: ${{ needs.access-policy.result }}
+        run: |
+          printf 'SAST=%s SCA=%s Secrets=%s Policy=%s\n' \
+            "$SAST_RESULT" "$SCA_RESULT" "$SECRETS_RESULT" "$POLICY_RESULT"
+          test "$SAST_RESULT" = success &&
+          test "$SCA_RESULT" = success &&
+          test "$SECRETS_RESULT" = success &&
+          test "$POLICY_RESULT" = success
